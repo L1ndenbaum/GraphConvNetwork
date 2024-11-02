@@ -10,6 +10,7 @@ from torch_geometric.nn import GCNConv
 import networkx as nx
 from torchvision import transforms as transforms
 import torchaudio.transforms as audio_transforms
+import nets
 
 class Timer:
     def __init__(self):
@@ -93,7 +94,6 @@ def graph_construction(feature_vecs, labels):
                 continue
             adj_matrix[i][j] = 1 / torch.sum(torch.pow(feature_vecs[i] - feature_vecs[j], 2), 0)
     edge_index, edge_weight = torch_geometric.utils.dense_to_sparse(adj_matrix)
-    
     return Data(x=feature_vecs, edge_index=edge_index, edge_weight=edge_weight, y=labels)
 
 def graph_visualize(graph_dataset):
@@ -144,9 +144,7 @@ def graph_conv_train(gcn:nn.Module, cnn, train_loader, num_epochs, lr, device):
             for waveform, label in query_set:
                 waveforms.append(waveform.squeeze(0)),
                 labels.append(label)
-            
-            if len(waveforms) == 0:
-                continue
+
             waveforms = torch.stack(waveforms).to(device)
             labels = torch.tensor(labels, device=device)
             feature_vecs = feature_extraction(cnn, waveforms)
@@ -162,6 +160,7 @@ def graph_conv_train(gcn:nn.Module, cnn, train_loader, num_epochs, lr, device):
             optimizer.step()
             metric.add(feature_vecs.shape[0], loss.item(),
                        query_size, get_num_correct_query_pred(pred_lables, y, support_size))
+            print(epoch, metric[2])
             
         accs.append(metric[3] / metric[2])
         losses.append(metric[1] / metric[0])
@@ -211,5 +210,78 @@ def cnn_train(model, num_epochs, train_loader, device):
 
 def feature_extraction(cnn, waveforms):
     cnn.eval()
-    feature_vecs, _ = cnn(waveforms)
-    return feature_vecs.squeeze(1)
+    feature_vecs = cnn(waveforms)
+    feature_vecs = feature_vecs.cpu()
+    return feature_vecs
+
+def train(net:nets.EnsembleNet, train_loader, num_epochs, lr, device):
+
+    def init_weights(module):
+        if isinstance(module, nn.Linear) or isinstance(module, nn.Conv1d):
+            nn.init.xavier_uniform_(module.weight)
+        elif isinstance(module, GCNConv):
+            nn.init.xavier_uniform_(module.lin.weight)
+
+    def get_num_correct_query_pred(pred_y, y, support_size):
+        return torch.sum(pred_y[support_size:].argmax(dim=1) == y[support_size:])
+
+    optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=0.0001)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
+    loss_function = nn.CrossEntropyLoss()
+    net.to(device).train()
+    net.apply(init_weights)
+    losses = []
+    accs = []
+
+    for epoch in range(1, num_epochs+1):
+        metric = Accumulator(4) # 一个epoch经过样本数 一个epoch所有样本损失总量 一个epoch的query总数 一个epoch正确分类的query总数
+        for support_set, query_set in train_loader:
+            support_size, query_size = len(support_set), len(query_set)
+            waveforms, labels = [], []
+            for waveform, label in support_set:
+                waveforms.append(waveform.squeeze(0)),
+                labels.append(label)
+            waveforms = torch.stack(waveforms).to(device)
+            labels = torch.tensor(labels, device=device)
+
+            pred_labels = net(waveforms, labels)
+            loss = loss_function(pred_labels, labels)
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            metric.add(waveforms.shape[0], loss.item(),
+                        query_size, get_num_correct_query_pred(pred_labels, labels, support_size))
+
+        accs.append(metric[3] / metric[2])
+        losses.append(metric[1] / metric[0])
+        if epoch % 10 == 0 :
+            print(f"Epoch:{epoch}  |  Loss :{losses[-1]:.3f}  |  Acc: {accs[-1]*100:.2f}%")
+
+    plt.plot(list(range(num_epochs)), losses, label='Loss')
+    plt.plot(list(range(num_epochs)), accs, label='Acc')
+    plt.title("Loss")
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss & Acc')
+
+def to_graph_dataset(cnn:nn.Module, dataloader:torch.utils.data.DataLoader, device):
+    """
+    Device指的是CNN的device, 而不是最终形成的graph的device\n
+    最终的graph会被放在cpu上
+    """
+    graphs = []
+    for support_set, query_set in dataloader:
+        waveforms, labels = [], []
+        for waveform, label in support_set:
+            waveforms.append(waveform.squeeze(0)),
+            labels.append(label)
+        for waveform, label in query_set:
+            waveforms.append(waveform.squeeze(0)),
+            labels.append(label)
+        waveforms = torch.stack(waveforms).to(device)
+        labels = torch.tensor(labels)
+
+        feature_vecs = feature_extraction(cnn, waveforms)
+        graph = graph_construction(feature_vecs, labels)
+        graphs.append(graph)
+    
+    return graphs

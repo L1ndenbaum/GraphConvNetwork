@@ -1,14 +1,9 @@
 import torch.nn as nn
 import torch.optim as optim
-import torch_geometric.utils
-import torch, random, torchaudio, os, time, math, torch_geometric
+import torch, random, torchaudio, os, torch_geometric
 from torch.utils.data import Dataset
-import matplotlib.pyplot as plt
-from torch_geometric.data import Data
-from torch_geometric.utils import to_networkx
-import networkx as nx
 from torchvision import transforms as transforms
-import torchaudio.transforms as audio_transforms
+from torch_geometric.data import Dataset as GeometricDataset
 
 class MIMII(Dataset):
     """
@@ -17,6 +12,7 @@ class MIMII(Dataset):
     def __init__(self, root_dir, N, K, query_size, machine_classes=['fan', 'pump', 'slider', 'valve'], 
                  model_ids=['id_00', 'id_02', 'id_04', 'id_06'], categories=['normal', 'abnormal'],
                  resample=False, resample_rate=None):
+        super().__init__()
         self.root_dir = root_dir
         self.machine_classes = machine_classes  # ['fan', 'pump', 'slider', 'valve']
         self.model_ids = model_ids  # ['id_00', 'id_02', 'id_04', 'id_06']
@@ -37,7 +33,7 @@ class MIMII(Dataset):
                     class_id = f'{machine_class}_{model}_{category}'
                     class_list[class_id] = []
                     category_dir = os.path.join(self.root_dir, machine_class, machine_class, model, category)
-                    class_list[class_id] = set([os.path.join(category_dir, f) for f in os.listdir(category_dir) if f.endswith('.wav')])
+                    class_list[class_id] = [os.path.join(category_dir, f) for f in os.listdir(category_dir) if f.endswith('.wav')]
 
         return class_list
 
@@ -49,10 +45,8 @@ class MIMII(Dataset):
 
         for _ in range(self.K):
             for class_id in self.classes:
-                if len(self.data[class_id]) == 0:
-                    continue
-                file_path = random.choice(list(self.data[class_id]))
-                self.data[class_id].remove(file_path)
+                file_path = random.choice(self.data[class_id])
+                #self.data[class_id].remove(file_path)
                 waveform, sample_rate = torchaudio.load(file_path)
                 if self.resample:
                     waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(waveform)
@@ -60,10 +54,8 @@ class MIMII(Dataset):
 
         for _ in range(self.query_size):
             query_class_id = random.choice(self.classes)
-            if len(self.data[query_class_id]) == 0:
-                continue
-            query_file_path = random.choice(list(self.data[query_class_id]))
-            self.data[query_class_id].remove(query_file_path)
+            query_file_path = random.choice(self.data[query_class_id])
+            #self.data[query_class_id].remove(query_file_path)
             query_waveform, sample_rate = torchaudio.load(query_file_path)
             if self.resample:
                     query_waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(query_waveform)
@@ -75,3 +67,15 @@ class MIMII(Dataset):
     
     def __repr__(self):
         return f"Label-to-index --> {self.labels_to_indexs}"
+
+class GraphDataset(GeometricDataset):
+    def __init__(self, graphs:list[torch_geometric.data.Data]):
+        super().__init__()
+        self.graphs = graphs
+
+    def len(self):
+        return len(self.graphs)
+    
+    def __getitem__(self, idx):
+        return self.graphs[idx]
+    
