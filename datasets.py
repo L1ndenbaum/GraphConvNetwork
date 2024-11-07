@@ -24,6 +24,7 @@ class MIMII(Dataset):
         self.labels_to_indexs = {class_str:i for i, class_str in enumerate(self.classes)}
         self.index_to_labels = {i:class_str for i, class_str in enumerate(self.classes)}
         self.N, self.K, self.query_size = N, K, query_size
+        self.N_classes = random.sample(self.classes, k=N)
 
     def _load_class_list(self):
         class_list = {}
@@ -38,24 +39,23 @@ class MIMII(Dataset):
         return class_list
 
     def __len__(self):
-        return int(sum([len(self.data[_class]) for _class in self.classes]) / (self.N*self.K + self.query_size))
+        return int(min([len(self.data[class_id]) for class_id in self.N_classes]) / self.K)
 
     def __getitem__(self, idx):
         support_set, query_set = [], []
 
-        for _ in range(self.K):
-            for class_id in self.classes:
-                file_path = random.choice(self.data[class_id])
-                #self.data[class_id].remove(file_path)
-                waveform, sample_rate = torchaudio.load(file_path)
-                if self.resample:
-                    waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(waveform)
-                support_set.append((waveform, self.labels_to_indexs[class_id]))
+        for class_id in self.N_classes:
+            for k in range(self.K):
+                if self.K*idx+k < len(self.data[class_id]):
+                    file_path = self.data[class_id][self.K*idx+k]
+                    waveform, sample_rate = torchaudio.load(file_path)
+                    if self.resample:
+                        waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(waveform)
+                    support_set.append((waveform, self.labels_to_indexs[class_id]))
 
         for _ in range(self.query_size):
-            query_class_id = random.choice(self.classes)
+            query_class_id = random.choice(self.N_classes)
             query_file_path = random.choice(self.data[query_class_id])
-            #self.data[query_class_id].remove(query_file_path)
             query_waveform, sample_rate = torchaudio.load(query_file_path)
             if self.resample:
                     query_waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(query_waveform)
@@ -64,7 +64,7 @@ class MIMII(Dataset):
             
         random.shuffle(support_set)
         return (support_set, query_set)
-    
+
     def __repr__(self):
         return f"Label-to-index --> {self.labels_to_indexs}"
 

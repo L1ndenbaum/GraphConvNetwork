@@ -210,11 +210,11 @@ def cnn_train(model, num_epochs, train_loader, device):
 
 def feature_extraction(cnn, waveforms):
     cnn.eval()
-    feature_vecs = cnn(waveforms)
-    feature_vecs = feature_vecs.cpu()
+    with torch.no_grad():
+        feature_vecs = cnn(waveforms)
     return feature_vecs
 
-def train(net:nets.EnsembleNet, train_loader, num_epochs, lr, device):
+def train(net, train_loader, num_epochs, lr, device):
 
     def init_weights(module):
         if isinstance(module, nn.Linear) or isinstance(module, nn.Conv1d):
@@ -285,3 +285,23 @@ def to_graph_dataset(cnn:nn.Module, dataloader:torch.utils.data.DataLoader, devi
         graphs.append(graph)
     
     return graphs
+
+def gcn_test(gcn, graph_testloader, device):
+
+    def get_acc(y_hat, y):
+        return torch.sum(y_hat == y) / len(y)
+
+    with torch.no_grad():
+        for graph in graph_testloader:
+            accs = []
+            x, y = graph.x.to(device), graph.y.to(device)
+            edge_index, edge_weight = graph.edge_index.to(device), graph.edge_weight.to(device)
+            y_hat = gcn(x, edge_index, edge_weight).argmax(axis=-1)
+            accs.append(get_acc(y_hat, y))
+
+    plt.plot(list(range(1, len(graph_testloader+1))), accs)
+    plt.xlabel('Graph')
+    plt.ylabel('Accurancy')
+    plt.title('Test Accurancy For Graphs')
+
+        

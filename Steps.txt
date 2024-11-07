@@ -1,4 +1,0 @@
-1. 用小样本(N批 SupportSet和QuerySet)训练一个CNN
-2. 将训练小样本打包成torch_geometric.data.Data, 里面含有一张或这多张图， 制作一个人工GraphDataset(继承自torch_geometric.data.Dataset)
-3. 用torch_geometric的DataLoader加载自制的图数据集
-4. 训练GCN，一个图训练num_epochs次

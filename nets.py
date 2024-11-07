@@ -50,27 +50,31 @@ class AudioCNN(nn.Module):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
     
 class GCN(nn.Module):
-    def __init__(self, num_features_inputs, num_classes_output):
+    def __init__(self, num_features_inputs, embed_size, num_classes_output):
         super().__init__()
-        self.gcn = GCNConv(num_features_inputs, 16)
-        self.out = torch.nn.Linear(16, num_classes_output)
+        self.g_conv1 = GCNConv(num_features_inputs, embed_size)
+        self.out = nn.Linear(embed_size, num_classes_output)
 
     def forward(self, x, edge_index, edge_weight):
-        embeddings = self.gcn(x, edge_index, edge_weight=edge_weight).relu()
-        out = self.out(embeddings)
+        embedding = F.leaky_relu(self.g_conv1(x, edge_index, edge_weight=edge_weight))
+        out = self.out(embedding)
         return out
     
-class EnsembleNet(nn.Module):
-    def __init__(self, cnn_embed_size, cnn_num_channels_input=1, cnn_num_channels_hidden=32, cnn_stride=16,
-                num_classes_outputs=32):
-        super().__init__()
-        self.cnn = AudioCNN(embed_size=cnn_embed_size, num_channels_input=cnn_num_channels_input,
-                            num_channels_hidden=cnn_num_channels_hidden, stride=cnn_stride)
-        self.gcn = GCN(num_features_inputs=self.cnn.embed_size,
-                       num_classes_output=num_classes_outputs)
+    def count_parameters(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+    
+# class EnsembleNet(nn.Module):
+#     def __init__(self, cnn_embed_size, cnn_num_channels_input=1, cnn_num_channels_hidden=32, cnn_stride=16,
+#                 num_classes_outputs=32):
+#         super().__init__()
+#         self.cnn = AudioCNN(embed_size=cnn_embed_size, num_channels_input=cnn_num_channels_input,
+#                             num_channels_hidden=cnn_num_channels_hidden, stride=cnn_stride)
+#         self.gcn = GCN(num_features_inputs=self.cnn.embed_size,
+#                        num_classes_output=num_classes_outputs)
 
-    def forward(self, X, y):
-        encoded_X = self.cnn(X)
-        graph = utils.graph_construction(encoded_X, y)
-        pred_y = self.gcn(graph.x, graph.edge_index, edge_weight=graph.edge_weight)
-        return pred_y
+#     def forward(self, X, y):
+#         encoded_X = self.cnn(X)
+#         graph = utils.graph_construction(encoded_X, y)
+#         pred_y = self.gcn(graph.x, graph.edge_index, edge_weight=graph.edge_weight)
+#         return pred_y
+    
