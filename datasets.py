@@ -21,10 +21,10 @@ class MIMII(Dataset):
         self.resample_rate = resample_rate
         self.data = self._load_class_list() # 结构: {机械种类_机械型号_是否故障: [音频路径]}
         self.classes = list(self.data.keys()) # 共32种 如: 'fan_id_00_normal'
-        self.labels_to_indexs = {class_str:i for i, class_str in enumerate(self.classes)}
-        self.index_to_labels = {i:class_str for i, class_str in enumerate(self.classes)}
         self.N, self.K, self.query_size = N, K, query_size
         self.N_classes = random.sample(self.classes, k=N)
+        self.labels_to_indexs = {class_str:i for i, class_str in enumerate(self.N_classes)}
+        self.index_to_labels = {i:class_str for i, class_str in enumerate(self.N_classes)}
 
     def _load_class_list(self):
         class_list = {}
@@ -53,8 +53,8 @@ class MIMII(Dataset):
                         waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(waveform)
                     support_set.append((waveform, self.labels_to_indexs[class_id]))
 
-        for _ in range(self.query_size):
-            query_class_id = random.choice(self.N_classes)
+        query_class_ids = random.sample(self.N_classes, k=self.query_size)
+        for query_class_id in query_class_ids:
             query_file_path = random.choice(self.data[query_class_id])
             query_waveform, sample_rate = torchaudio.load(query_file_path)
             if self.resample:

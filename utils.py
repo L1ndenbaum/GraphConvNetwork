@@ -2,15 +2,14 @@ import torch.nn as nn
 import torch.optim as optim
 import torch_geometric.utils
 import torch, random, torchaudio, os, time, math, torch_geometric
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader, random_split
 import matplotlib.pyplot as plt
 from torch_geometric.data import Data
 from torch_geometric.utils import to_networkx
 from torch_geometric.nn import GCNConv
 import networkx as nx
-from torchvision import transforms as transforms
-import torchaudio.transforms as audio_transforms
-import nets
+import datasets, nets
+from torch_geometric.loader import DataLoader as GeometricDataLoader
 
 class Timer:
     def __init__(self):
@@ -74,9 +73,13 @@ class ResVisualization:
         plt.show()
 
 class Args:
-    def __init__(self, seed):
+    def __init__(self, seed, N, K, query_size, SNR):
         self.device = try_gpu()
         self.seed = seed
+        self.SNR = SNR
+        self.N = N
+        self.K = K
+        self.query_size = query_size
 
 def try_gpu(i=0):
     """如果存在,返回gpu(i), 否则返回cpu"""
@@ -113,155 +116,109 @@ def graph_visualize(graph_dataset):
                     font_size=14
                     )
     
-def graph_conv_train(gcn:nn.Module, cnn, train_loader, num_epochs, lr, device):
+def gcn_train(gcn, graph_train_loader, query_size, num_epochs, lr, args:Args):
 
     def init_weights(module):
         if isinstance(module, nn.Linear):
             nn.init.xavier_uniform_(module.weight)
-    
-        elif isinstance(module, GCNConv):
+        elif isinstance(module, torch_geometric.nn.GCNConv):
             nn.init.xavier_uniform_(module.lin.weight)
-    
-    def get_num_correct_query_pred(pred_y, y, support_size):
-        return torch.sum(pred_y[support_size:].argmax(dim=1) == y[support_size:])
 
-    gcn.apply(init_weights)
-    gcn.to(device).train()
-    loss_function = nn.CrossEntropyLoss()
+    def get_num_correct_query_pred(pred_y, y, query_size):
+        return torch.sum(pred_y[-query_size:].argmax(dim=1) == y[-query_size:])
+
     optimizer = optim.Adam(gcn.parameters(), lr=lr)
-    losses, accs = [], []
-
-    for epoch in range(1, num_epochs+1):
-        metric = Accumulator(4) # 一个epoch经过样本数 一个epoch所有样本损失和 一个epoch的query总数 一个epoch正确分类的query总数
-        for support_set, query_set in train_loader:
-            waveforms, labels = [], []
-            support_size, query_size = len(support_set), len(query_set)
-
-            for waveform, label in support_set:
-                waveforms.append(waveform.squeeze(0)),
-                labels.append(label)
-
-            for waveform, label in query_set:
-                waveforms.append(waveform.squeeze(0)),
-                labels.append(label)
-
-            waveforms = torch.stack(waveforms).to(device)
-            labels = torch.tensor(labels, device=device)
-            feature_vecs = feature_extraction(cnn, waveforms)
-            graph = graph_construction(feature_vecs, labels)
-            x, y, edge_index, edge_weight = graph.x, graph.y, graph.edge_index, graph.edge_weight
-            edge_index = edge_index.to(device)
-            edge_weight = edge_weight.to(device)
-
+    loss_function = nn.CrossEntropyLoss()
+    gcn.to(args.device).train()
+    gcn.apply(init_weights)
+    num_subplot_rows = len(graph_train_loader) if len(graph_train_loader) <= 4 else 4
+    fig, axes = plt.subplots(num_subplot_rows, 2, squeeze=False)
+    for graph_idx, graph in enumerate(graph_train_loader):
+        losses, accs = [], []
+        x, y = graph.x.to(args.device), graph.y.to(args.device)
+        edge_index, edge_weight = graph.edge_index.to(args.device), graph.edge_weight.to(args.device)
+        for epoch in range(1, num_epochs+1):
+            metric = Accumulator(4) # 一个epoch经过样本数 gcn一个epoch所有样本损失总量 一个epoch的query总数 一个epoch正确分类的query总数
             optimizer.zero_grad()
-            pred_lables = gcn(x, edge_index, edge_weight)
-            loss = loss_function(pred_lables, y)
-            loss.backward()
+            y_hat = gcn(x, edge_index, edge_weight) + torch.tensor(1e-10)
+            loss = loss_function(y_hat, y)
+            loss.backward(retain_graph=True)
             optimizer.step()
-            metric.add(feature_vecs.shape[0], loss.item(),
-                       query_size, get_num_correct_query_pred(pred_lables, y, support_size))
-            print(epoch, metric[2])
-            
-        accs.append(metric[3] / metric[2])
-        losses.append(metric[1] / metric[0])
-        if epoch % 50 == 0 :
-            print(f"Epoch:{epoch}  |  Loss :{losses[-1]:.3f}  |  Acc: {accs[-1]*100:.2f}%")
+            with torch.no_grad():
+                metric.add(x.shape[0], loss.item(),
+                        query_size, get_num_correct_query_pred(y_hat, y, query_size))
+            if epoch % 50==0:
+                print(f"在第{graph_idx+1}张图  |  Epoch:{epoch}  |  GCN_Loss :{metric[1]:.3f}  |  Acc:{metric[3]/metric[2]*100:.2f}%")
+            losses.append(metric[1])
+            accs.append(metric[3]/metric[2])
+        del x, y, edge_index, edge_weight
+        torch.cuda.empty_cache()
 
-    plt.plot(list(range(num_epochs)), losses, label='Loss')
-    plt.plot(list(range(num_epochs)), accs, label='Acc')
-    plt.legend()
+        if graph_idx+1 <= num_subplot_rows:
+            axes[graph_idx, 0].plot(list(range(num_epochs)), losses)
+            axes[graph_idx, 0].set_title('GCN Loss')
+            axes[graph_idx, 1].plot(list(range(num_epochs)), accs)
+            axes[graph_idx, 1].set_title('Query Accurancy')
+
+    plt.tight_layout()
+    res_folder = f"./Results/{args.N}-way-{args.K}-shots"
+    if not os.path.exists(res_folder):
+        os.makedirs(res_folder)
+    plt.savefig(os.path.join(res_folder, f"gcn-train-res-{args.N}-way-{args.K}-shots"))
     
-def cnn_train(model, num_epochs, train_loader, device):
+def cnn_train(cnn, train_loader, num_epochs, lr, args:Args):
 
-    optimizer = optim.Adam(model.parameters(), lr=0.01, weight_decay=0.0001)
+    def init_weights(module):
+        if isinstance(module, nn.Linear) or isinstance(module, nn.Conv1d):
+            nn.init.xavier_uniform_(module.weight)
+
+    optimizer = optim.Adam(cnn.parameters(), lr=lr, weight_decay=0.0001)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
     loss_function = nn.CrossEntropyLoss()
-    model.to(device).train()
+
+    cnn.to(args.device).train()
+    cnn.apply(init_weights)
     losses = []
 
     for epoch in range(1, num_epochs+1):
-        metric = Accumulator(2) # 一个epoch的损失 这个epoch经过的batch数
-        for support_set, _ in train_loader:
+        metric = Accumulator(2) # 一个epoch经过样本数 cnn一个epoch所有样本损失总量
+        for support_set, query_set in train_loader:
             waveforms, labels = [], []
             for waveform, label in support_set:
                 waveforms.append(waveform.squeeze(0)),
                 labels.append(label)
-
-            waveforms = torch.stack(waveforms).to(device)
-            labels = torch.tensor(labels, device=device)
-
+            for waveform, label in query_set:
+                waveforms.append(waveform.squeeze(0)),
+                labels.append(label)
+            waveforms = torch.stack(waveforms).to(args.device)
+            labels = torch.tensor(labels, device=args.device)
+            
             optimizer.zero_grad()
-            _, outputs = model(waveforms)
-            outputs = outputs.squeeze(1)
-            loss = loss_function(outputs, labels)
+            y_hat = cnn(waveforms)
+            loss = loss_function(y_hat, labels)
             loss.backward()
             optimizer.step()
             scheduler.step()
-            metric.add(loss.item(), 1)
+            metric.add(waveforms.shape[0], loss.item())
+            del waveforms, labels
+            torch.cuda.empty_cache()
+        losses.append(metric[1])
 
-        #if epoch%10 == 0:
-        print(f"Train Epoch: {epoch}   |   Loss: {metric[0] / metric[1]:.3f}")
-        losses.append(metric[0])
-
-    plt.plot(list(range(num_epochs)), losses)
-    plt.title("Loss")
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
+        if epoch % 4 == 0 :
+            print(f"Epoch:{epoch}  |  CNN_Loss :{metric[1]:.3f}")
+    fig = plt.figure()
+    plt.plot(list(range(num_epochs)), losses, label='Loss')
+    plt.title('CNN Loss')
+    res_folder = f"./Results/{args.N}-way-{args.K}-shots"
+    if not os.path.exists(res_folder):
+        os.makedirs(res_folder)
+    plt.savefig(os.path.join(res_folder, f"cnn-train-res-{args.N}-way-{args.K}-shots"))
 
 def feature_extraction(cnn, waveforms):
     cnn.eval()
     with torch.no_grad():
         feature_vecs = cnn(waveforms)
     return feature_vecs
-
-def train(net, train_loader, num_epochs, lr, device):
-
-    def init_weights(module):
-        if isinstance(module, nn.Linear) or isinstance(module, nn.Conv1d):
-            nn.init.xavier_uniform_(module.weight)
-        elif isinstance(module, GCNConv):
-            nn.init.xavier_uniform_(module.lin.weight)
-
-    def get_num_correct_query_pred(pred_y, y, support_size):
-        return torch.sum(pred_y[support_size:].argmax(dim=1) == y[support_size:])
-
-    optimizer = optim.Adam(net.parameters(), lr=lr, weight_decay=0.0001)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
-    loss_function = nn.CrossEntropyLoss()
-    net.to(device).train()
-    net.apply(init_weights)
-    losses = []
-    accs = []
-
-    for epoch in range(1, num_epochs+1):
-        metric = Accumulator(4) # 一个epoch经过样本数 一个epoch所有样本损失总量 一个epoch的query总数 一个epoch正确分类的query总数
-        for support_set, query_set in train_loader:
-            support_size, query_size = len(support_set), len(query_set)
-            waveforms, labels = [], []
-            for waveform, label in support_set:
-                waveforms.append(waveform.squeeze(0)),
-                labels.append(label)
-            waveforms = torch.stack(waveforms).to(device)
-            labels = torch.tensor(labels, device=device)
-
-            pred_labels = net(waveforms, labels)
-            loss = loss_function(pred_labels, labels)
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            metric.add(waveforms.shape[0], loss.item(),
-                        query_size, get_num_correct_query_pred(pred_labels, labels, support_size))
-
-        accs.append(metric[3] / metric[2])
-        losses.append(metric[1] / metric[0])
-        if epoch % 10 == 0 :
-            print(f"Epoch:{epoch}  |  Loss :{losses[-1]:.3f}  |  Acc: {accs[-1]*100:.2f}%")
-
-    plt.plot(list(range(num_epochs)), losses, label='Loss')
-    plt.plot(list(range(num_epochs)), accs, label='Acc')
-    plt.title("Loss")
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss & Acc')
 
 def to_graph_dataset(cnn:nn.Module, dataloader:torch.utils.data.DataLoader, device):
     """
@@ -286,22 +243,98 @@ def to_graph_dataset(cnn:nn.Module, dataloader:torch.utils.data.DataLoader, devi
     
     return graphs
 
-def gcn_test(gcn, graph_testloader, device):
+def gcn_test(gcn, graph_testloader, args:Args):
 
     def get_acc(y_hat, y):
         return torch.sum(y_hat == y) / len(y)
 
+    accs = []
     with torch.no_grad():
-        for graph in graph_testloader:
-            accs = []
-            x, y = graph.x.to(device), graph.y.to(device)
-            edge_index, edge_weight = graph.edge_index.to(device), graph.edge_weight.to(device)
+        for graph_idx, graph in enumerate(graph_testloader):
+            x, y = graph.x.to(args.device), graph.y.to(args.device)
+            edge_index, edge_weight = graph.edge_index.to(args.device), graph.edge_weight.to(args.device)
             y_hat = gcn(x, edge_index, edge_weight).argmax(axis=-1)
-            accs.append(get_acc(y_hat, y))
-
-    plt.plot(list(range(1, len(graph_testloader+1))), accs)
+            accs.append(get_acc(y_hat, y).item())
+            print(f"在第 {graph_idx+1} 张测试图中, 测试正确率为:{accs[-1]*100:.2f}%")
+            
+    print(f"在测试集上的平均正确率:{sum(accs) / len(accs)*100:.2f}%")
+    fig = plt.figure()
+    plt.plot(list(range(1, len(graph_testloader)+1)), accs)
     plt.xlabel('Graph')
     plt.ylabel('Accurancy')
     plt.title('Test Accurancy For Graphs')
+    res_folder = f"./Results/{args.N}-way-{args.K}-shots"
+    if not os.path.exists(res_folder):
+        os.makedirs(res_folder)
+    plt.savefig(os.path.join(res_folder, f"gcn-test-res-{args.N}-way-{args.K}-shots"))
 
-        
+def overall_process(mimii_dataset_SNR, N, K, query_size, train_test_ratio,
+                    cnn_num_hidden_channels, cnn_lr, cnn_num_epochs,
+                    gcn_embed_size, gcn_lr, gcn_num_epochs):
+    """
+    整个图卷积的全过程\n
+    Dataset -> DataLoader --Feed to CNN -> feature_vectors -> GraphDataLoader
+    --Feed to GCN -> pred_classes
+    """
+    args = Args(seed=42, N=N, K=K, query_size=query_size, SNR=mimii_dataset_SNR)
+
+    if args.device != "cpu":
+        num_workers = 1
+        pin_memory = True
+        torch.cuda.manual_seed(args.seed)
+    else:
+        num_workers = 0
+        pin_memory = False
+        torch.manual_seed(args.seed)
+
+    # 加载数据集
+    mimii_dataset = datasets.MIMII(root_dir=f'./data/mimii/{mimii_dataset_SNR}'+'dB_SNR', N=N, K=K, query_size=query_size)
+    print(f"Length of Dataset: {len(mimii_dataset)}")
+    train_size = int(train_test_ratio * len(mimii_dataset))
+    test_size = len(mimii_dataset) - train_size
+    train_set, test_set = random_split(mimii_dataset, [train_size, test_size])
+    train_loader = DataLoader(train_set, batch_size=1, shuffle=True, num_workers=num_workers, pin_memory=pin_memory)
+    test_loader = DataLoader(test_set, batch_size=1, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+    print(f"Train Size:{train_size}  |  Test Size:{test_size}")
+
+    # 可视化一个样本
+    fig = plt.figure()
+    waveform_shape = 0
+    sample_rate = 16000
+    for support_set, _ in train_loader:
+        for waveform, _ in support_set:
+            waveform = waveform.squeeze(0)
+            print("波形形状: {}".format(waveform.size()))
+            print("波形采样率: {}".format(sample_rate))
+            plt.plot(waveform[0].T.numpy())
+            waveform_shape = waveform.shape
+            break
+        break
+
+    # CNN训练
+    cnn = nets.AudioCNN(num_channels_input=8, 
+                        num_channels_hidden=cnn_num_hidden_channels, 
+                        num_classes_output=args.N)
+    cnn_train(cnn, train_loader, num_epochs=cnn_num_epochs, 
+              lr=cnn_lr, args=args)
+    
+    # 将特征向量转为图结构
+    graphs = to_graph_dataset(cnn, train_loader, device=args.device)
+    graph_dataset = datasets.GraphDataset(graphs=graphs)
+    query_size = mimii_dataset.query_size
+    graph_trainloader = GeometricDataLoader(graph_dataset, batch_size=1, shuffle=True)
+    print(f"图训练数据集中共有{len(graph_trainloader)}张图")
+
+    # GCN训练
+    gcn = nets.GCN(num_features_inputs=cnn_num_hidden_channels*2, 
+                   embed_size=gcn_embed_size, num_classes_output=args.N)
+    gcn_train(gcn, graph_trainloader, query_size, 
+              num_epochs=gcn_num_epochs, lr=gcn_lr, args=args)
+    
+    # GCN测试
+    test_graphs = to_graph_dataset(cnn, test_loader, device=args.device)
+    graph_testset = datasets.GraphDataset(graphs=test_graphs)
+    graph_testloader = GeometricDataLoader(graph_testset, batch_size=1, shuffle=False)
+    print(f"图测试数据集中共有{len(graph_testloader)}张图")
+    gcn_test(gcn, graph_testloader, args)
+    

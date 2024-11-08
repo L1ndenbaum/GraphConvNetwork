@@ -4,7 +4,7 @@ from torch.nn import functional as F
 from torch_geometric.nn import GCNConv
 
 class AudioCNN(nn.Module):
-    def __init__(self, embed_size, num_channels_input=1, num_channels_hidden=32, num_classes_output=32, stride=16):
+    def __init__(self, num_channels_input, num_channels_hidden, num_classes_output, stride=16):
         super().__init__()
         self.conv1 = nn.Conv1d(num_channels_input, num_channels_hidden, kernel_size=80, stride=stride)
         self.bn1 = nn.BatchNorm1d(num_channels_hidden)
@@ -19,9 +19,9 @@ class AudioCNN(nn.Module):
         self.bn4 = nn.BatchNorm1d(2 * num_channels_hidden)
         self.pool4 = nn.MaxPool1d(4)
         self.num_channels_output = num_channels_hidden * 2
-        self.feature_extract_fc = nn.Linear(2 * num_channels_hidden, embed_size)
+        #self.feature_extract_fc = nn.Linear(2 * num_channels_hidden, embed_size)
         self.classify_fc = nn.Linear(2 * num_channels_hidden, num_classes_output)
-        self.embed_size = embed_size
+        #self.embed_size = embed_size
 
     def forward(self, x):
         x = self.conv1(x)
@@ -41,10 +41,8 @@ class AudioCNN(nn.Module):
             y_hat = self.classify_fc(features)
             return y_hat
         else:
+            #features = self.feature_extract_fc(x)
             return features
-        #features = self.feature_extract_fc(x)
-    #x = x.permute(0, 2, 1)
-    #,F.log_softmax(x, dim=2)
     
     def count_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
