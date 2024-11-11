@@ -47,6 +47,50 @@ class AudioCNN(nn.Module):
     def count_parameters(self):
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
     
+class AudioCNN2D(nn.Module):
+    def __init__(self, num_channels_input, num_channels_hidden, num_classes_output, stride=3):
+        super().__init__()
+        self.conv1 = nn.Conv2d(num_channels_input, num_channels_hidden, kernel_size=4, stride=stride)
+        self.bn1 = nn.BatchNorm2d(num_channels_hidden)
+        self.pool1 = nn.MaxPool2d(2)
+        self.conv2 = nn.Conv2d(num_channels_hidden, num_channels_hidden, kernel_size=2)
+        self.bn2 = nn.BatchNorm2d(num_channels_hidden)
+        self.pool2 = nn.MaxPool2d(2)
+        self.conv3 = nn.Conv2d(num_channels_hidden, 2 * num_channels_hidden, kernel_size=2)
+        self.bn3 = nn.BatchNorm2d(2 * num_channels_hidden)
+        self.pool3 = nn.MaxPool2d(2)
+        self.conv4 = nn.Conv2d(2 * num_channels_hidden, 2 * num_channels_hidden, kernel_size=2)
+        self.bn4 = nn.BatchNorm2d(2 * num_channels_hidden)
+        self.pool4 = nn.MaxPool2d(2)
+        self.num_channels_output = num_channels_hidden * 2
+        #self.feature_extract_fc = nn.Linear(2 * num_channels_hidden, embed_size)
+        self.classify_fc = nn.Linear(2 * num_channels_hidden, num_classes_output)
+        #self.embed_size = embed_size
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = F.relu(self.bn1(x))
+        x = self.pool1(x)
+        x = self.conv2(x)
+        x = F.relu(self.bn2(x))
+        x = self.pool2(x)
+        x = self.conv3(x)
+        x = F.relu(self.bn3(x))
+        x = self.pool3(x)
+        x = self.conv4(x)
+        x = F.relu(self.bn4(x))
+        x = self.pool4(x)
+        features = F.avg_pool2d(x, kernel_size=((x.shape[-2], x.shape[-1]))).squeeze(-1).squeeze(-1)
+        if self.training:
+            y_hat = self.classify_fc(features)
+            return y_hat
+        else:
+            #features = self.feature_extract_fc(x)
+            return features
+    
+    def count_parameters(self):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+    
 class GCN(nn.Module):
     def __init__(self, num_features_inputs, embed_size, num_classes_output):
         super().__init__()

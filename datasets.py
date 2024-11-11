@@ -2,17 +2,20 @@ import torch.nn as nn
 import torch.optim as optim
 import torch, random, torchaudio, os, torch_geometric
 from torch.utils.data import Dataset
-from torchvision import transforms as transforms
+from torchaudio import transforms as transforms
 from torch_geometric.data import Dataset as GeometricDataset
 
 class MIMII(Dataset):
     """
-    用于小样本学习的MIMII数据集
+    用于小样本学习的MIMII数据集\n
+    参数:\n
+        transform : 默认None, 不对wav文件变换, 可选['spectrogram', 'mfcc']
     """
     def __init__(self, root_dir, N, K, query_size, machine_classes=['fan', 'pump', 'slider', 'valve'], 
                  model_ids=['id_00', 'id_02', 'id_04', 'id_06'], categories=['normal', 'abnormal'],
-                 resample=False, resample_rate=None):
+                 transform=None, resample=False, resample_rate=None):
         super().__init__()
+        self.sample_rate = 16000
         self.root_dir = root_dir
         self.machine_classes = machine_classes  # ['fan', 'pump', 'slider', 'valve']
         self.model_ids = model_ids  # ['id_00', 'id_02', 'id_04', 'id_06']
@@ -25,6 +28,20 @@ class MIMII(Dataset):
         self.N_classes = random.sample(self.classes, k=N)
         self.labels_to_indexs = {class_str:i for i, class_str in enumerate(self.N_classes)}
         self.index_to_labels = {i:class_str for i, class_str in enumerate(self.N_classes)}
+        if transform == 'spectrogram':
+            self.transform = transforms.Spectrogram(
+                                            n_fft=1024, win_length=512, hop_length=128,
+                                            )
+        if transform == 'mfcc':
+            self.transform = transforms.MFCC(
+                                sample_rate=self.sample_rate,
+                                n_mfcc=13,                
+                                melkwargs={"n_fft": 512,
+                                           "hop_length": 256,
+                                           "n_mels": 23,
+                                           "center": False
+                                           }
+                                )
 
     def _load_class_list(self):
         class_list = {}
@@ -51,6 +68,8 @@ class MIMII(Dataset):
                     waveform, sample_rate = torchaudio.load(file_path)
                     if self.resample:
                         waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(waveform)
+                    if self.transform is not None:
+                        waveform = self.transform(waveform)
                     support_set.append((waveform, self.labels_to_indexs[class_id]))
 
         query_class_ids = random.sample(self.N_classes, k=self.query_size)
@@ -59,6 +78,8 @@ class MIMII(Dataset):
             query_waveform, sample_rate = torchaudio.load(query_file_path)
             if self.resample:
                     query_waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(query_waveform)
+            if self.transform is not None:
+                    query_waveform = self.transform(query_waveform)
 
             query_set.append((query_waveform, self.labels_to_indexs[query_class_id]))
             

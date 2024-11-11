@@ -81,6 +81,7 @@ class Args:
         self.K = K
         self.query_size = query_size
 
+
 def try_gpu(i=0):
     """如果存在,返回gpu(i), 否则返回cpu"""
     if torch.cuda.device_count() >= i+1:
@@ -328,7 +329,7 @@ def overall_process(mimii_dataset_SNR, N, K, query_size, train_test_ratio,
     # GCN训练
     gcn = nets.GCN(num_features_inputs=cnn_num_hidden_channels*2, 
                    embed_size=gcn_embed_size, num_classes_output=args.N)
-    gcn_train(gcn, graph_trainloader, query_size, 
+    gcn_train(gcn, graph_trainloader, query_size,
               num_epochs=gcn_num_epochs, lr=gcn_lr, args=args)
     
     # GCN测试
