@@ -73,13 +73,17 @@ class ResVisualization:
         plt.show()
 
 class Args:
-    def __init__(self, seed, N, K, query_size, SNR):
+    def __init__(self, seed, N, K, query_size, SNR, transform):
         self.device = try_gpu()
         self.seed = seed
         self.SNR = SNR
         self.N = N
         self.K = K
         self.query_size = query_size
+        if transform is None:
+            self.transform = 'raw'
+        else:
+            self.transform = transform
 
 
 def try_gpu(i=0):
@@ -121,9 +125,9 @@ def gcn_train(gcn, graph_train_loader, query_size, num_epochs, lr, args:Args):
 
     def init_weights(module):
         if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight)
+            nn.init.normal_(module.weight, mean=0, std=1. / (10 ** 0.5))
         elif isinstance(module, torch_geometric.nn.GCNConv):
-            nn.init.xavier_uniform_(module.lin.weight)
+            nn.init.normal_(module.lin.weight, mean=0, std=1. / (10 ** 0.5))
 
     def get_num_correct_query_pred(pred_y, y, query_size):
         return torch.sum(pred_y[-query_size:].argmax(dim=1) == y[-query_size:])
@@ -141,7 +145,7 @@ def gcn_train(gcn, graph_train_loader, query_size, num_epochs, lr, args:Args):
         for epoch in range(1, num_epochs+1):
             metric = Accumulator(4) # 一个epoch经过样本数 gcn一个epoch所有样本损失总量 一个epoch的query总数 一个epoch正确分类的query总数
             optimizer.zero_grad()
-            y_hat = gcn(x, edge_index, edge_weight) + torch.tensor(1e-10)
+            y_hat = gcn(x, edge_index, edge_weight)
             loss = loss_function(y_hat, y)
             loss.backward(retain_graph=True)
             optimizer.step()
@@ -165,13 +169,13 @@ def gcn_train(gcn, graph_train_loader, query_size, num_epochs, lr, args:Args):
     res_folder = f"./Results/{args.N}-way-{args.K}-shots"
     if not os.path.exists(res_folder):
         os.makedirs(res_folder)
-    plt.savefig(os.path.join(res_folder, f"gcn-train-res-{args.N}-way-{args.K}-shots"))
+    plt.savefig(os.path.join(res_folder, f"{args.SNR}SNR-gcn-train-res-{args.N}-way-{args.K}-shots-"+args.transform))
     
 def cnn_train(cnn, train_loader, num_epochs, lr, args:Args):
 
     def init_weights(module):
-        if isinstance(module, nn.Linear) or isinstance(module, nn.Conv1d):
-            nn.init.xavier_uniform_(module.weight)
+        if isinstance(module, nn.Linear) or isinstance(module, (nn.Conv1d, nn.Conv2d)):
+            nn.init.kaiming_uniform_(module.weight, nonlinearity='relu')
 
     optimizer = optim.Adam(cnn.parameters(), lr=lr, weight_decay=0.0001)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
@@ -205,21 +209,20 @@ def cnn_train(cnn, train_loader, num_epochs, lr, args:Args):
             torch.cuda.empty_cache()
         losses.append(metric[1])
 
-        if epoch % 4 == 0 :
-            print(f"Epoch:{epoch}  |  CNN_Loss :{metric[1]:.3f}")
+        print(f"Epoch:{epoch}  |  CNN_Loss :{metric[1]:.3f}")
     fig = plt.figure()
     plt.plot(list(range(num_epochs)), losses, label='Loss')
     plt.title('CNN Loss')
     res_folder = f"./Results/{args.N}-way-{args.K}-shots"
     if not os.path.exists(res_folder):
         os.makedirs(res_folder)
-    plt.savefig(os.path.join(res_folder, f"cnn-train-res-{args.N}-way-{args.K}-shots"))
+    plt.savefig(os.path.join(res_folder, f"{args.SNR}SNR-cnn-train-res-{args.N}-way-{args.K}-shots-"+args.transform))
 
 def feature_extraction(cnn, waveforms):
     cnn.eval()
     with torch.no_grad():
         feature_vecs = cnn(waveforms)
-    return feature_vecs
+    return feature_vecs.cpu()
 
 def to_graph_dataset(cnn:nn.Module, dataloader:torch.utils.data.DataLoader, device):
     """
@@ -267,17 +270,19 @@ def gcn_test(gcn, graph_testloader, args:Args):
     res_folder = f"./Results/{args.N}-way-{args.K}-shots"
     if not os.path.exists(res_folder):
         os.makedirs(res_folder)
-    plt.savefig(os.path.join(res_folder, f"gcn-test-res-{args.N}-way-{args.K}-shots"))
+    plt.savefig(os.path.join(res_folder, f"{args.SNR}SNR-gcn-test-res-{args.N}-way-{args.K}-shots-"+args.transform))
 
 def overall_process(mimii_dataset_SNR, N, K, query_size, train_test_ratio,
                     cnn_num_hidden_channels, cnn_lr, cnn_num_epochs,
-                    gcn_embed_size, gcn_lr, gcn_num_epochs):
+                    gcn_embed_size, gcn_lr, gcn_num_epochs, dataset_transform=None):
     """
     整个图卷积的全过程\n
     Dataset -> DataLoader --Feed to CNN -> feature_vectors -> GraphDataLoader
-    --Feed to GCN -> pred_classes
+    --Feed to GCN -> pred_classe
+
+    cnn_type : 可选 默认'1D', 可选['1D', '2D']
     """
-    args = Args(seed=42, N=N, K=K, query_size=query_size, SNR=mimii_dataset_SNR)
+    args = Args(seed=42, N=N, K=K, query_size=query_size, SNR=mimii_dataset_SNR, transform=dataset_transform)
 
     if args.device != "cpu":
         num_workers = 1
@@ -289,7 +294,8 @@ def overall_process(mimii_dataset_SNR, N, K, query_size, train_test_ratio,
         torch.manual_seed(args.seed)
 
     # 加载数据集
-    mimii_dataset = datasets.MIMII(root_dir=f'./data/mimii/{mimii_dataset_SNR}'+'dB_SNR', N=N, K=K, query_size=query_size)
+    mimii_dataset = datasets.MIMII(root_dir=f'./data/mimii/{mimii_dataset_SNR}'+'dB_SNR',
+                                   N=N, K=K, query_size=query_size, transform=dataset_transform)
     print(f"Length of Dataset: {len(mimii_dataset)}")
     train_size = int(train_test_ratio * len(mimii_dataset))
     test_size = len(mimii_dataset) - train_size
@@ -301,21 +307,29 @@ def overall_process(mimii_dataset_SNR, N, K, query_size, train_test_ratio,
     # 可视化一个样本
     fig = plt.figure()
     waveform_shape = 0
-    sample_rate = 16000
     for support_set, _ in train_loader:
-        for waveform, _ in support_set:
+        for waveform, label in support_set:
             waveform = waveform.squeeze(0)
             print("波形形状: {}".format(waveform.size()))
-            print("波形采样率: {}".format(sample_rate))
-            plt.plot(waveform[0].T.numpy())
+            print("波形采样率: {}".format(mimii_dataset.sample_rate))
+            if len(waveform.shape) == 3: # 转换过的2D波形
+                plt.imshow(waveform[0], origin='lower')
+                plt.colorbar(label="Decibels (dB)")
+            else: # 1D 纯波形
+                plt.plot(waveform[0].T.numpy())
             waveform_shape = waveform.shape
             break
         break
 
     # CNN训练
-    cnn = nets.AudioCNN(num_channels_input=8, 
-                        num_channels_hidden=cnn_num_hidden_channels, 
-                        num_classes_output=args.N)
+    if dataset_transform is None:
+        cnn = nets.AudioCNN(num_channels_input=waveform_shape[0], 
+                            num_channels_hidden=cnn_num_hidden_channels, 
+                            num_classes_output=args.N)
+    else:
+        cnn = nets.AudioCNN2D(num_channels_input=waveform_shape[0], 
+                            num_channels_hidden=cnn_num_hidden_channels, 
+                            num_classes_output=args.N)
     cnn_train(cnn, train_loader, num_epochs=cnn_num_epochs, 
               lr=cnn_lr, args=args)
     

@@ -15,6 +15,7 @@ class MIMII(Dataset):
                  model_ids=['id_00', 'id_02', 'id_04', 'id_06'], categories=['normal', 'abnormal'],
                  transform=None, resample=False, resample_rate=None):
         super().__init__()
+        self.SNR = root_dir.split('/')[-1][0]
         self.sample_rate = 16000
         self.root_dir = root_dir
         self.machine_classes = machine_classes  # ['fan', 'pump', 'slider', 'valve']
@@ -28,9 +29,10 @@ class MIMII(Dataset):
         self.N_classes = random.sample(self.classes, k=N)
         self.labels_to_indexs = {class_str:i for i, class_str in enumerate(self.N_classes)}
         self.index_to_labels = {i:class_str for i, class_str in enumerate(self.N_classes)}
+        self.transform = transform
         if transform == 'spectrogram':
             self.transform = transforms.Spectrogram(
-                                            n_fft=1024, win_length=512, hop_length=128,
+                                            n_fft=4096, win_length=32, hop_length=256, power=0.5
                                             )
         if transform == 'mfcc':
             self.transform = transforms.MFCC(
@@ -39,8 +41,7 @@ class MIMII(Dataset):
                                 melkwargs={"n_fft": 512,
                                            "hop_length": 256,
                                            "n_mels": 23,
-                                           "center": False
-                                           }
+                                           "center": False}
                                 )
 
     def _load_class_list(self):
