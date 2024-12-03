@@ -62,9 +62,9 @@ class AudioCNN2D(nn.Module):
         self.conv4 = nn.Conv2d(2 * num_channels_hidden, 2 * num_channels_hidden, kernel_size=2)
         self.bn4 = nn.BatchNorm2d(2 * num_channels_hidden)
         self.pool4 = nn.AvgPool2d(2)
-        self.num_channels_output = num_channels_hidden * 2
+        self.num_channels_output = 2 * num_channels_hidden
         #self.feature_extract_fc = nn.Linear(2 * num_channels_hidden, embed_size)
-        self.classify_fc = nn.Linear(2 * num_channels_hidden, num_classes_output)
+        self.classify_fc = nn.Linear(self.num_channels_output, num_classes_output)
         #self.embed_size = embed_size
 
     def forward(self, x):

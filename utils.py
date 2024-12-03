@@ -133,6 +133,7 @@ def gcn_train(gcn, graph_train_loader, query_size, num_epochs, lr, args:Args):
         return torch.sum(pred_y[-query_size:].argmax(dim=1) == y[-query_size:])
 
     optimizer = optim.Adam(gcn.parameters(), lr=lr)
+    #scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.9)
     loss_function = nn.CrossEntropyLoss()
     gcn.to(args.device).train()
     gcn.apply(init_weights)
@@ -149,6 +150,7 @@ def gcn_train(gcn, graph_train_loader, query_size, num_epochs, lr, args:Args):
             loss = loss_function(y_hat, y)
             loss.backward(retain_graph=True)
             optimizer.step()
+            #scheduler.step()
             with torch.no_grad():
                 metric.add(x.shape[0], loss.item(),
                         query_size, get_num_correct_query_pred(y_hat, y, query_size))
@@ -178,7 +180,7 @@ def cnn_train(cnn, train_loader, num_epochs, lr, args:Args):
             nn.init.kaiming_uniform_(module.weight, nonlinearity='relu')
 
     optimizer = optim.Adam(cnn.parameters(), lr=lr, weight_decay=0.0001)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=16, gamma=0.5)
     loss_function = nn.CrossEntropyLoss()
 
     cnn.to(args.device).train()
@@ -203,7 +205,7 @@ def cnn_train(cnn, train_loader, num_epochs, lr, args:Args):
             loss = loss_function(y_hat, labels)
             loss.backward()
             optimizer.step()
-            scheduler.step()
+            #scheduler.step()
             metric.add(waveforms.shape[0], loss.item())
             del waveforms, labels
             torch.cuda.empty_cache()
@@ -220,6 +222,7 @@ def cnn_train(cnn, train_loader, num_epochs, lr, args:Args):
 
 def feature_extraction(cnn, waveforms):
     cnn.eval()
+    cnn.to(waveforms.device)
     with torch.no_grad():
         feature_vecs = cnn(waveforms)
     return feature_vecs.cpu()
