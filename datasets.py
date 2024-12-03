@@ -16,7 +16,7 @@ class MIMII(Dataset):
     def __init__(self, root_dir, N, K, query_size, machine_classes=['fan', 'pump', 'slider', 'valve'], 
                  model_ids=['id_00', 'id_02', 'id_04', 'id_06'], categories=['normal', 'abnormal'],
                  indicated_support_samples = None, indicated_query_samples = None,
-                 transform=None, resample=False, resample_rate=None):
+                 transform=None, resample=False, resample_rate=None, seed=42):
         super().__init__()
         self.SNR = root_dir.split('/')[-1][0]
         self.sample_rate = 16000
@@ -46,6 +46,7 @@ class MIMII(Dataset):
                                            "n_mels": 23,
                                            "center": False}
                                 )
+        random.seed(seed)
 
     def _load_class_list(self):
         class_list = {}
