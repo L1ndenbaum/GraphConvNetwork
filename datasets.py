@@ -8,15 +8,26 @@ from torch_geometric.data import Dataset as GeometricDataset
 class MIMII(Dataset):
     """
     用于小样本学习的MIMII数据集\n
-    将整个数据集划分成若干小子集, 在每个子集中, 对每个support_set和query_set,
-    对每个类别, 加载前K个作为support_set, 加载后query_size个作为
     参数:\n
-        transform : 默认None, 不对wav文件变换, 可选['spectrogram', 'mfcc']
+        root_dir : MIMII数据集的根目录\n
+        N : N个支持类别\n
+        K : 为每个支持类别提供K个支持样本\n
+        machine_classes : 机器的种类, 最多四种, 默认全选(['fan', 'pump', 'slider', 'valve'])\n
+        model_ids : 每种机器的型号, 最多四种, 默认全选(['id_00', 'id_02', 'id_04', 'id_06'])\n
+        categories : 机器是否故障, 默认全选(['normal', 'abnormal'])\n
+        indicated_query_classes : 默认无, 可手动提供, 表示希望将这些类别作为询问类别\n
+        transform : 将波形转换为2D Image的变换方式, 目前只提供:['spectrogram']\n
+        resample : 是否对.wav波形重采样, 默认False, 如果使用True需提供重采样率\n
+        resample_rate : 重采样率\n
+        seed : 用于初始化random库的种子
+
+    __getitem__()返回值:\n
+        每次返回支持集和询问集, 每个集中的每个元素为三元组(Raw波形, STFT_Image, label)
     """
+
     def __init__(self, root_dir, N, K, query_size, machine_classes=['fan', 'pump', 'slider', 'valve'], 
                  model_ids=['id_00', 'id_02', 'id_04', 'id_06'], categories=['normal', 'abnormal'],
-                 indicated_support_samples = None, indicated_query_samples = None,
-                 transform=None, resample=False, resample_rate=None, seed=42):
+                 indicated_query_classes=None, transform='spectrogram', resample=False, resample_rate=None, seed=42):
         super().__init__()
         self.SNR = root_dir.split('/')[-1][0]
         self.sample_rate = 16000
@@ -37,16 +48,11 @@ class MIMII(Dataset):
             self.transform = transforms.Spectrogram(
                                             n_fft=4096, win_length=32, hop_length=256, power=1.3
                                             )
-        if transform == 'mfcc':
-            self.transform = transforms.MFCC(
-                                sample_rate=self.sample_rate,
-                                n_mfcc=13,                
-                                melkwargs={"n_fft": 512,
-                                           "hop_length": 256,
-                                           "n_mels": 23,
-                                           "center": False}
-                                )
         random.seed(seed)
+        if indicated_query_classes is not None:
+            self.query_class_ids = indicated_query_classes
+        else:
+            self.query_class_ids = random.sample(self.N_classes, k=self.query_size)
 
     def _load_class_list(self):
         class_list = {}
@@ -70,32 +76,28 @@ class MIMII(Dataset):
         return class_list
 
     def __len__(self):
-        return int(min([len(self.data[class_id]) for class_id in self.N_classes]) / (self.K))
+        return int(min([len(self.data[class_id]) for class_id in self.N_classes]) / (self.K+1))
 
     def __getitem__(self, idx):
         support_set, query_set = [], []
 
         for class_id in self.N_classes:
             for k in range(self.K):
-                # if self.K*idx+k+self.query_size < len(self.data[class_id]):
-                if self.K*idx+k < len(self.data[class_id]):
-                    support_file_path = self.data[class_id][self.K*idx+k]
-                    support_waveform, sample_rate = torchaudio.load(support_file_path)
-                    if self.resample:
-                        support_waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(support_waveform)
-                    freq_support_waveform = self.transform(support_waveform)
-                    support_set.append((support_waveform, freq_support_waveform, self.labels_to_indexs[class_id]))
-
-        query_class_ids = random.sample(self.N_classes, k=self.query_size)
-        for query_class_id in query_class_ids:
-            for query_idx in range(self.query_size):
-                query_file_path = random.choice(self.data[query_class_id])
-                #query_file_path = self.data[class_id][self.K*idx+self.K+query_idx]
-                query_waveform, sample_rate = torchaudio.load(query_file_path)
+                support_file_path = self.data[class_id][(self.K+1)*idx + k]
+                support_waveform, sample_rate = torchaudio.load(support_file_path)
                 if self.resample:
-                    query_waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(query_waveform)
-                freq_query_waveform = self.transform(query_waveform)
-                query_set.append((query_waveform, freq_query_waveform, self.labels_to_indexs[query_class_id]))
+                    support_waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(support_waveform)
+                freq_support_waveform = self.transform(support_waveform)
+                support_set.append((support_waveform, freq_support_waveform, self.labels_to_indexs[class_id]))
+
+        
+        for class_id in self.query_class_ids:
+            query_file_path = self.data[class_id][self.K*idx + self.K]
+            query_waveform, sample_rate = torchaudio.load(query_file_path)
+            if self.resample:
+                query_waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(query_waveform)
+            freq_query_waveform = self.transform(query_waveform)
+            query_set.append((query_waveform, freq_query_waveform, self.labels_to_indexs[class_id]))
 
         random.shuffle(support_set)
         random.shuffle(query_set)
