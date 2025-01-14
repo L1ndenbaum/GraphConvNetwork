@@ -67,13 +67,14 @@ class ResVisualization:
         plt.show()
 
 class Args:
-    def __init__(self, seed, N, K, query_size, SNR, transform):
+    def __init__(self, seed, N, K, query_size, SNR=None, transform=None, dis_calcu='euci'):
         self.device = try_gpu()
         self.seed = seed
         self.SNR = SNR
         self.N = N
         self.K = K
         self.query_size = query_size
+        self.dis_calcu = dis_calcu
         if transform is None:
             self.transform = 'raw'
         else:
@@ -84,7 +85,39 @@ def try_gpu(i=0):
     if torch.cuda.device_count() >= i+1:
         return torch.device(f'cuda:{i}')
     return torch.device('cpu')
-        
+
+def global_manual_seed(seed, device):
+    if device != "cpu":
+        torch.cuda.manual_seed(seed)
+    else:
+        torch.manual_seed(seed)
+
+def euclidean_distance(x1:torch.Tensor, x2:torch.Tensor, squared=True):
+            """返回两张量的欧氏距离, 可指定squared=False不进行取平方根, 张量均为1D"""
+            res = torch.sum(torch.pow(x1 - x2, 2), 0)
+            if squared:
+                res = torch.sqrt(res)
+            return res
+
+def mahalanobis_distance(x1: torch.Tensor, x2: torch.Tensor, sample_matrix: torch.Tensor, squared=True) -> torch.Tensor:
+    """返回两张量在样本协方差矩阵下的马氏距离"""
+    diff = x1 - x2
+    cov_matrix = torch.cov(sample_matrix.T)
+    cov_inv = torch.linalg.inv(cov_matrix)
+    res = diff.T @ cov_inv @ diff
+    if squared:
+        res = torch.sqrt(res)
+    return res
+
+def cosine_distance(x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
+    """返回两向量的余弦距离"""
+    dot_product = torch.dot(x1, x2)
+    norm_x1 = torch.linalg.norm(x1)
+    norm_x2 = torch.linalg.norm(x2)
+    cosine_similarity = dot_product / (norm_x1 * norm_x2)
+    cosine_dist = 1 - cosine_similarity
+    return cosine_dist
+
 def graph_construction(feature_vecs, labels):
     """返回一个torch_geometric.data.Data类, 代表一张图"""
     num_nodes = feature_vecs.shape[0]
@@ -106,14 +139,14 @@ def to_graph_dataset(time_cnn:nn.Module, freq_cnn:nn.Module, dataloader:torch.ut
     """
     time_graphs, freq_graphs = [], []
     for support_set, query_set in dataloader:
-        waveforms, freq_waveforms, labels = [], [], []
-        for waveform, freq_waveform, label in support_set:
+        waveforms, spectrograms, labels = [], [], []
+        for waveform, spectrogram, label in support_set:
             waveforms.append(waveform.squeeze(0))
-            freq_waveforms.append(freq_waveform.squeeze(0))
+            spectrograms.append(spectrogram.squeeze(0))
             labels.append(label)
-        for waveform, freq_waveform, label in query_set:
+        for waveform, spectrogram, label in query_set:
             waveforms.append(waveform.squeeze(0))
-            freq_waveforms.append(freq_waveform.squeeze(0))
+            spectrograms.append(spectrogram.squeeze(0))
             labels.append(label)
         
         waveforms = torch.stack(waveforms).to(args.device)
@@ -122,9 +155,9 @@ def to_graph_dataset(time_cnn:nn.Module, freq_cnn:nn.Module, dataloader:torch.ut
         del waveforms
         torch.cuda.empty_cache()
 
-        freq_waveforms = torch.stack(freq_waveforms).to(args.device)
-        freq_feature_vecs = feature_extraction(freq_cnn, freq_waveforms)
-        del freq_waveforms
+        spectrograms = torch.stack(spectrograms).to(args.device)
+        freq_feature_vecs = feature_extraction(freq_cnn, spectrograms)
+        del spectrograms
         torch.cuda.empty_cache()
         
         time_graph = graph_construction(time_feature_vecs, labels)
@@ -142,8 +175,8 @@ def gcn_train(gcn, time_graph_trainloader, freq_graph_trainloader, query_size, n
         elif isinstance(module, torch_geometric.nn.GCNConv):
             nn.init.xavier_uniform_(module.lin.weight)
 
-    def get_num_correct_query_pred(pred_y, y, query_size):
-        return torch.sum(pred_y[-query_size:].argmax(dim=1) == y[-query_size:])
+    def get_num_correct_query_pred(y_hat, y, query_size):
+        return torch.sum(y_hat[-query_size:].argmax(dim=1) == y[-query_size:])
 
     optimizer = optim.Adam(gcn.parameters(), lr=lr, weight_decay=0.0001) # , weight_decay=0.0001
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=100, gamma=0.85)
@@ -212,10 +245,10 @@ def cnn_train(time_cnn, freq_cnn, train_loader, num_epochs, time_cnn_lr, freq_cn
     for epoch in range(1, num_epochs+1):
         metric = Accumulator(3) # 一个epoch经过样本数 time_cnn一个epoch所有样本损失总量
         for support_set, _ in train_loader:
-            waveforms, freq_waveforms, labels = [], [], []
-            for waveform, freq_waveform, label in support_set:
+            waveforms, spectrograms, labels = [], [], []
+            for waveform, spectrogram, label in support_set:
                 waveforms.append(waveform.squeeze(0))
-                freq_waveforms.append(freq_waveform.squeeze(0))
+                spectrograms.append(spectrogram.squeeze(0))
                 labels.append(label)
             labels = torch.tensor(labels, device=args.device)
             
@@ -231,16 +264,16 @@ def cnn_train(time_cnn, freq_cnn, train_loader, num_epochs, time_cnn_lr, freq_cn
             del waveforms
 
             # 频域CNN 训练部分
-            freq_waveforms = torch.stack(freq_waveforms).to(args.device)
+            spectrograms = torch.stack(spectrograms).to(args.device)
             freq_optimizer.zero_grad()
-            freq_y_hat = freq_cnn(freq_waveforms)
+            freq_y_hat = freq_cnn(spectrograms)
             loss = loss_function(freq_y_hat, labels)
             loss.backward()
             freq_loss = loss.item()
             freq_optimizer.step()
             freq_scheduler.step()
-            metric.add(freq_waveforms.shape[0], time_loss, freq_loss)
-            del freq_waveform, labels
+            metric.add(spectrograms.shape[0], time_loss, freq_loss)
+            del spectrogram, labels
             torch.cuda.empty_cache()
         
         time_losses.append(metric[1] / metric[0])
@@ -308,3 +341,49 @@ def gcn_test(gcn, time_graph_testloader, freq_graph_testloader, args:Args):
         rec_file.write(f"{args.SNR}SNR-gcn-test-res-{args.N}-way-{args.K}-shots\n")
         rec_file.write(f"在整体测试集上的平均正确率:{sum(accs) / len(accs)*100:.2f}%\n在Query测试集的平均正确率为:{sum(query_accs)/len(query_accs)*100:.2f}%\n\n")
     plt.savefig(os.path.join(res_folder, f"{args.SNR}SNR-gcn-test-res-{args.N}-way-{args.K}-shots"))
+
+def train(ensemble_net, train_loader, num_epochs, lr, args):
+    def init_weights(module):
+        if isinstance(module, (nn.Conv1d, nn.Conv2d, nn.Linear)):
+            nn.init.xavier_uniform_(module.weight)
+        elif isinstance(module, torch_geometric.nn.GCNConv):
+            nn.init.xavier_uniform_(module.lin.weight)
+
+    def get_query_acc(y_hat, y, query_size):
+        return torch.sum(y_hat[-query_size:].argmax(dim=1) == y[-query_size:]) / query_size
+    
+    def get_acc(y_hat, y):
+        return torch.sum(y_hat == y) / len(y)
+    
+    ensemble_net.apply(init_weights)
+    ensemble_net.train()
+    loss_function = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(ensemble_net.parameters(), lr=lr)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.95)
+
+    for epoch in range(num_epochs):
+        metric = Accumulator(4) # 一个epoch单样本损失平均值 一个epoch的query正确率 一个epoch的总正确率 一个epoch的批量数
+        for support_set, query_set in train_loader:
+            waveforms, spectrograms, labels = [], [], []
+            for waveform, spectrogram, label in support_set:
+                waveforms.append(waveform.squeeze(0))
+                spectrograms.append(spectrogram.squeeze(0))
+                labels.append(label)
+            for waveform, spectrogram, label in query_set:
+                waveforms.append(waveform.squeeze(0))
+                spectrograms.append(spectrogram.squeeze(0))
+                labels.append(label)
+            y = torch.tensor(labels, device=args.device)
+            waveforms = torch.stack(waveforms).to(args.device)
+            spectrograms = torch.stack(spectrograms).to(args.device)
+
+            y_hat = ensemble_net(waveforms, spectrograms)
+            loss = loss_function(y_hat, y)
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
+            metric.add(loss.item()/len(labels), 
+                       get_query_acc(y_hat, y, args.query_size), get_acc(y_hat, y), 1)
+            del spectrograms, waveforms, labels
+            torch.cuda.empty_cache()
+        print(f"Epoch:{epoch}, Loss:{metric[0]}, Query正确率:{metric[1]/metric[3]}, 整体正确率:{metric[2]/metric[3]}")

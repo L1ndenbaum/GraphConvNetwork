@@ -4,6 +4,8 @@ import torch, random, torchaudio, os, torch_geometric
 from torch.utils.data import Dataset
 from torchaudio import transforms as transforms
 from torch_geometric.data import Dataset as GeometricDataset
+import pandas as pd
+import pyreadr
 
 class MIMII(Dataset):
     """
@@ -29,6 +31,7 @@ class MIMII(Dataset):
                  model_ids=['id_00', 'id_02', 'id_04', 'id_06'], categories=['normal', 'abnormal'],
                  indicated_query_classes=None, transform='spectrogram', resample=False, resample_rate=None, seed=42):
         super().__init__()
+        random.seed(seed)
         self.SNR = root_dir.split('/')[-1][0]
         self.sample_rate = 16000
         self.root_dir = root_dir
@@ -48,11 +51,6 @@ class MIMII(Dataset):
             self.transform = transforms.Spectrogram(
                                             n_fft=4096, win_length=32, hop_length=256, power=1.3
                                             )
-        random.seed(seed)
-        if indicated_query_classes is not None:
-            self.query_class_ids = indicated_query_classes
-        else:
-            self.query_class_ids = random.sample(self.N_classes, k=self.query_size)
 
     def _load_class_list(self):
         class_list = {}
@@ -76,14 +74,14 @@ class MIMII(Dataset):
         return class_list
 
     def __len__(self):
-        return int(min([len(self.data[class_id]) for class_id in self.N_classes]) / (self.K+1))
+        return int(min([len(self.data[class_id]) for class_id in self.N_classes]) / (self.K+self.query_size))
 
     def __getitem__(self, idx):
         support_set, query_set = [], []
 
         for class_id in self.N_classes:
             for k in range(self.K):
-                support_file_path = self.data[class_id][(self.K+1)*idx + k]
+                support_file_path = self.data[class_id][self.K*idx + k]
                 support_waveform, sample_rate = torchaudio.load(support_file_path)
                 if self.resample:
                     support_waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(support_waveform)
@@ -91,13 +89,14 @@ class MIMII(Dataset):
                 support_set.append((support_waveform, freq_support_waveform, self.labels_to_indexs[class_id]))
 
         
-        for class_id in self.query_class_ids:
-            query_file_path = self.data[class_id][self.K*idx + self.K]
-            query_waveform, sample_rate = torchaudio.load(query_file_path)
-            if self.resample:
-                query_waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(query_waveform)
-            freq_query_waveform = self.transform(query_waveform)
-            query_set.append((query_waveform, freq_query_waveform, self.labels_to_indexs[class_id]))
+        for class_id in self.N_classes:
+            for query_idx in range(self.query_size):
+                query_file_path = self.data[class_id][self.K*idx + self.K + query_idx]
+                query_waveform, sample_rate = torchaudio.load(query_file_path)
+                if self.resample:
+                    query_waveform = torchaudio.transforms.Resample(sample_rate, self.resample_rate)(query_waveform)
+                freq_query_waveform = self.transform(query_waveform)
+                query_set.append((query_waveform, freq_query_waveform, self.labels_to_indexs[class_id]))
 
         random.shuffle(support_set)
         random.shuffle(query_set)
@@ -105,6 +104,72 @@ class MIMII(Dataset):
 
     def __repr__(self):
         return f"Label-to-index --> {self.labels_to_indexs}"
+    
+class TennesseeEastman(Dataset):
+    """TE化工数据集"""
+    def __init__(self, root_dir, N, K, query_size, is_training=False, selected_faults=None, seed=42):
+        super().__init__()
+        random.seed(seed)
+        self.N, self.K = N, K
+        self.query_size = query_size
+        self.is_training = is_training
+        self.selected_faults = selected_faults
+        self.class_samples = self.read_data(root_dir=root_dir)
+        self.labels_to_indexs = {class_str:i for i, class_str in enumerate(selected_faults)}
+        self.index_to_labels = {i:class_str for i, class_str in enumerate(selected_faults)}
+        self.transform = transforms.Spectrogram(n_fft=16, hop_length=1, power=1)
+
+    def __len__(self):
+        return int(min([len(class_samples) for class_samples in self.class_samples.values()]) / (self.K + self.query_size))
+    
+    def __getitem__(self, idx):
+        waveforms, spectrograms, labels = [], [], []
+
+        for fault_number in self.selected_faults:
+            for k in range(self.K):
+                waveform = self.class_samples[fault_number][self.K*idx + k]
+                spectrogram = self.transform(waveform)
+                waveforms.append(waveform)
+                spectrograms.append(spectrogram)
+                labels.append(torch.tensor(self.labels_to_indexs[fault_number], dtype=torch.long))
+
+            for query_idx in range(self.query_size):
+                waveform = self.class_samples[fault_number][self.K*idx + self.K + query_idx]
+                spectrogram = self.transform(waveform)
+                waveforms.append(waveform)
+                spectrograms.append(spectrogram)
+                labels.append(torch.tensor(self.labels_to_indexs[fault_number], dtype=torch.long))
+
+        waveforms = torch.stack(waveforms)
+        spectrograms = torch.stack(spectrograms)
+        labels = torch.stack(labels)
+        return waveforms, spectrograms, labels
+
+    def read_data(self, root_dir):
+        if self.is_training:
+            df = pyreadr.read_r(os.path.join(root_dir, 'TEP_Faulty_Training.RData'))
+            data = df['faulty_training'].drop(columns=['simulationRun'])
+        else:
+            df = pyreadr.read_r(os.path.join(root_dir, 'TEP_Faulty_Testing.RData'))
+            data = df['faulty_testing'].drop(columns=['simulationRun'])
+
+        if self.selected_faults is None:
+            selected_faults = random.sample(list(range(1, 21)), self.N)
+        else:
+            selected_faults = self.selected_faults
+
+        data = data[data['faultNumber'].isin(selected_faults)]
+        class_groups = [group for _, group in data.groupby('faultNumber')]
+        class_samples = {_class : []  for _class in selected_faults}
+
+        for class_group in class_groups:
+            class_sample_groups = [group for _, group in class_group.groupby(class_group.index // 500)]
+            for class_sample_group in class_sample_groups:
+                features = class_sample_group.drop(columns=['faultNumber', 'sample']).values.T
+                label = class_sample_group['faultNumber'].iloc[0]
+                class_samples[label].append(torch.tensor(features, dtype=torch.float32))
+
+        return class_samples
 
 class GraphDataset(GeometricDataset):
     def __init__(self, graphs:list[torch_geometric.data.Data]):
