@@ -2,4 +2,5 @@
 /data
 /Results
 /Records
-test.ipynb
+test*.ipynb
+mynewtest.ipynb
