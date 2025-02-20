@@ -73,6 +73,12 @@ class Args:
         self.query_size = query_size
         self.dataset_name = dataset_name
         self.in_data_type = in_data_type
+        if self.device != "cpu":
+            self.num_workers = 1
+            self.pin_memory = True
+        else:
+            self.num_workers = 0
+            self.pin_memory = False
 
 class TestInfo:
     def __init__(self):

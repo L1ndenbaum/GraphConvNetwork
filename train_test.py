@@ -95,7 +95,7 @@ def test(ensemble_net, test_loader, args:utils.Args):
             query_accs.append(get_query_acc(y_hat, labels, args.query_size))
             del features, labels
             torch.cuda.empty_cache()
-            print(f"Test Batch {test_idx:3d}   |   Query Acc:{query_accs[-1]*100:.2f}%")
+            print(f"Test Batch {test_idx+1:3d}   |   Query Acc:{query_accs[-1]*100:.2f}%")
 
     test_idx_list = list(range(1, len(test_loader)+1))
     _ = plt.figure(figsize=(16, 8))

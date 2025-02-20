@@ -112,7 +112,7 @@ class EnsembleGCN(nn.Module):
     def __init__(self, 
                  num_feature_inputs, feature_embed_sizes, 
                  final_embed_size, cross_class_conv1d_kernel_size, cross_class_conv1d_stride,
-                 dropout_rate, num_classes_output, query_size, num_features=2):
+                 dropout_rate, num_classes_output, query_size, num_features=2, gat_num_heads=1):
         super().__init__()
         self.num_features = num_features
         self.dropout = nn.Dropout(p=dropout_rate)
@@ -128,7 +128,8 @@ class EnsembleGCN(nn.Module):
         self.in_class_gconv = GCNConv(sum(feature_embed_sizes) + num_classes_output, final_embed_size)
         
         # 跨类传播信息的 GATConv层
-        self.cross_class_gat = GATv2Conv(sum(feature_embed_sizes) + num_classes_output, final_embed_size)
+        self.cross_class_gat = GATv2Conv(sum(feature_embed_sizes) + num_classes_output, final_embed_size,
+                                         heads=gat_num_heads)
 
         # 对经GATConv传播后的信息(类间分布)进行压缩的 Conv1d层
         self.cross_class_conv1d = nn.Sequential(
@@ -139,7 +140,7 @@ class EnsembleGCN(nn.Module):
         )
 
         # 最后的进行分类预测的 GCNConv层
-        fc_size = final_embed_size + math.floor((final_embed_size - cross_class_conv1d_kernel_size) / cross_class_conv1d_stride) + 1
+        fc_size = final_embed_size + math.floor((gat_num_heads*final_embed_size - cross_class_conv1d_kernel_size) / cross_class_conv1d_stride) + 1
         self.label_gconv = GCNConv(fc_size, num_classes_output)
 
     def to_one_hot(self, labels: torch.Tensor):
